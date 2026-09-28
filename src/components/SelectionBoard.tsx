@@ -76,7 +76,6 @@ export function SelectionBoard({
               }
             }}
             onRemove={() => onRemove(index)}
-            autoFocus={false}
           />
         ))}
       </div>

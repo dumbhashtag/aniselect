@@ -101,7 +101,7 @@ export function HomeClient({ hero }: { hero: React.ReactNode }) {
 
   return (
     <AnimeModalProvider>
-      <section id="top" className="relative isolate overflow-hidden px-4 pt-14 pb-16 sm:px-6 sm:pt-20 lg:pt-24">
+      <section id="top" className="relative isolate px-4 pt-14 pb-16 sm:px-6 sm:pt-20 lg:pt-24">
         {hero}
         <div className="relative mx-auto max-w-6xl">
           <div className="mx-auto mb-12 max-w-3xl text-center animate-fade-up">

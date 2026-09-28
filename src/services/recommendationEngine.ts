@@ -12,6 +12,7 @@ import type {
 } from "@/types/anime";
 import {
   discover,
+  getAnimeByIds,
   getAnimeByMalIds,
   getRelations,
   getSeeds,
@@ -129,11 +130,16 @@ interface Candidate {
   alLinks: Map<number, number>;
   malLinks: Map<number, number>;
   fromDiscovery: boolean;
+  /** Later franchise entries whose community signal was folded into this one. */
+  absorbed: Anime[];
 }
 
 interface Scored {
   candidate: Candidate;
-  score: number;
+  /** 0-1 taste similarity; drives the match percentage. */
+  similarity: number;
+  /** Similarity after ranking adjustments (hidden gems, specials, sequels). */
+  rankScore: number;
   signals: RecommendationSignals;
   affinity: number[];
   sharedTags: string[];
@@ -262,7 +268,7 @@ function scoreCandidate(candidate: Candidate, seeds: Seed[], profile: Profile, o
       : 0.4;
   const quality = anime.score ? clamp01((anime.score - 55) / 35) : 0.35;
 
-  let score =
+  const similarity =
     WEIGHTS.community * community +
     WEIGHTS.tags * tagSimilarity +
     WEIGHTS.genres * genreSimilarity +
@@ -272,16 +278,19 @@ function scoreCandidate(candidate: Candidate, seeds: Seed[], profile: Profile, o
     WEIGHTS.era * eraMatch +
     WEIGHTS.quality * quality;
 
+  // Ranking adjustments change *what* we pick, not how similar it is, so
+  // they don't feed into the displayed match percentage.
+  let rankScore = similarity;
   const popularity = anime.popularity ?? 0;
   if (options.hiddenGems) {
-    const popNorm = clamp01(Math.log10(Math.max(popularity, 1)) / Math.log10(800_000));
-    score *= 1 - 0.3 * popNorm;
+    const popNorm = clamp01((Math.log10(Math.max(popularity, 1)) - 4) / (Math.log10(700_000) - 4));
+    rankScore *= 1 - 0.55 * popNorm;
   } else if (popularity < 4_000) {
     // Very small audiences mean noisy tags and scores.
-    score *= 0.9;
+    rankScore *= 0.9;
   }
-  if (anime.format === "SPECIAL" || (anime.format === "OVA" && (anime.episodes ?? 1) <= 2)) score *= 0.85;
-  if (sequelOf) score *= 0.8;
+  if (anime.format === "SPECIAL" || (anime.format === "OVA" && (anime.episodes ?? 1) <= 2)) rankScore *= 0.85;
+  if (sequelOf) rankScore *= 0.8;
 
   const sharedTags = [...tags.entries()]
     .filter(([tag]) => profile.tags.has(tag) && isThemeTag(anime, tag))
@@ -293,7 +302,8 @@ function scoreCandidate(candidate: Candidate, seeds: Seed[], profile: Profile, o
 
   return {
     candidate,
-    score,
+    similarity,
+    rankScore,
     affinity,
     sharedTags,
     sharedGenres,
@@ -366,6 +376,12 @@ function buildReasons(scored: Scored, seeds: Seed[], relatedTo: Seed[]): string[
   if (studio) {
     const from = seeds.filter((s) => s.anime.studios.includes(studio)).map((s) => s.anime.title);
     reasons.push(`Animated by ${studio}, the studio behind ${joinNames(from.slice(0, 2))}.`);
+  }
+
+  if (scored.candidate.absorbed.length) {
+    reasons.push(
+      `Start here: fans also recommend its follow-up ${joinNames(scored.candidate.absorbed.slice(0, 2).map((a) => a.title))}, and those votes count toward this pick.`,
+    );
   }
 
   if ((anime.popularity ?? Infinity) < 40_000 && (anime.score ?? 0) >= 75) {
@@ -444,7 +460,7 @@ export async function recommendAnime(
     if (anime.malId && selectedMalIds.has(anime.malId)) return null;
     let entry = candidates.get(anime.anilistId);
     if (!entry) {
-      entry = { anime, alLinks: new Map(), malLinks: new Map(), fromDiscovery: false };
+      entry = { anime, alLinks: new Map(), malLinks: new Map(), fromDiscovery: false, absorbed: [] };
       candidates.set(anime.anilistId, entry);
     }
     return entry;
@@ -499,26 +515,27 @@ export async function recommendAnime(
     }
   }
 
-  const eligible = [...candidates.values()].filter((c) => {
-    const a = c.anime;
+  const isEligible = (a: Anime) => {
     if (a.isAdult && !options.allowAdult) return false;
     if (a.status === "NOT_YET_RELEASED" || a.format === "MUSIC") return false;
     if (!a.coverImage) return false;
+    if (selectedIds.has(a.anilistId!) || (a.malId && selectedMalIds.has(a.malId))) return false;
     const franchise = directFranchise.get(a.anilistId!);
     // Only a direct sequel of a pick is a sensible franchise recommendation.
     if (franchise && franchise.type !== "SEQUEL") return false;
     return true;
-  });
+  };
 
+  const eligible = [...candidates.values()].filter((c) => isEligible(c.anime));
   if (!eligible.length) throw new RecommendationError("We couldn't find anything new to recommend for these picks.");
 
-  const ranked = eligible
-    .map((c) => scoreCandidate(c, seeds, profile, options))
-    .sort((a, b) => b.score - a.score);
+  const score = (c: Candidate) => scoreCandidate(c, seeds, profile, options);
+  const byRank = (a: Scored, b: Scored) => b.rankScore - a.rankScore;
+  const ranked = eligible.map(score).sort(byRank);
 
   // Check franchise ties for the leaders so two seasons of one show (or a
   // spin-off of a pick) can't take multiple slots.
-  const shortlist = ranked.slice(0, Math.max(18, count * 6));
+  let shortlist = ranked.slice(0, Math.max(18, count * 6));
   let relations = new Map<number, RelationRef[]>();
   try {
     relations = await getRelations(shortlist.map((s) => s.candidate.anime.anilistId!));
@@ -527,6 +544,9 @@ export async function recommendAnime(
   }
 
   const franchiseIds = new Set<number>([...selectedIds, ...directFranchise.keys()]);
+  shortlist = await collapseToFranchiseStart(shortlist, relations, franchiseIds, candidates, isEligible, score);
+  shortlist.sort(byRank);
+
   const picked: Scored[] = [];
   const pickedIds = new Set<number>();
   let franchisePicks = 0;
@@ -534,6 +554,7 @@ export async function recommendAnime(
   for (const entry of shortlist) {
     if (picked.length >= count) break;
     const id = entry.candidate.anime.anilistId!;
+    if (pickedIds.has(id)) continue;
     const rels = relations.get(id) ?? [];
     const strongRelIds = rels.filter((r) => STRONG_FRANCHISE.has(r.relationType)).map((r) => r.anilistId);
 
@@ -551,12 +572,15 @@ export async function recommendAnime(
   }
 
   // Extremely niche picks can exhaust the shortlist; fill from the rest.
-  for (const entry of ranked.slice(shortlist.length)) {
+  for (const entry of ranked) {
     if (picked.length >= count) break;
-    if (entry.sequelOf && franchisePicks >= 1) continue;
+    const id = entry.candidate.anime.anilistId!;
+    if (pickedIds.has(id) || (entry.sequelOf && franchisePicks >= 1)) continue;
     picked.push(entry);
+    pickedIds.add(id);
   }
 
+  picked.sort((a, b) => b.similarity - a.similarity);
   return picked.map((entry) => {
     const relatedSeeds = seeds
       .map((seed) => ({ seed, affinity: entry.affinity[seed.index] }))
@@ -569,8 +593,8 @@ export async function recommendAnime(
 
     return {
       anime: entry.candidate.anime,
-      score: round(entry.score),
-      matchPercentage: toMatchPercentage(entry.score),
+      score: round(entry.similarity),
+      matchPercentage: toMatchPercentage(entry.similarity),
       reasons: buildReasons(entry, seeds, relatedTo),
       relatedTo: relatedTo.map((s) => s.anime),
       sharedGenres: entry.sharedGenres,
@@ -579,4 +603,98 @@ export async function recommendAnime(
       signals: entry.signals,
     };
   });
+}
+
+function isRealStartingPoint(root: Anime, later: Anime): boolean {
+  const releasedFirst = !root.year || !later.year || root.year <= later.year;
+  const established = (root.popularity ?? 0) >= 0.6 * (later.popularity ?? 0);
+  return releasedFirst && established;
+}
+
+/**
+ * Community recs often point at a later season ("86 Part 2"), but someone
+ * new to a franchise should start at the beginning. Walk PREQUEL links
+ * (up to three hops) and replace the later entry with the franchise's
+ * first entry, carrying over its recommendation votes.
+ */
+async function collapseToFranchiseStart(
+  shortlist: Scored[],
+  relations: Map<number, RelationRef[]>,
+  franchiseIds: Set<number>,
+  candidates: Map<number, Candidate>,
+  isEligible: (anime: Anime) => boolean,
+  score: (candidate: Candidate) => Scored,
+): Promise<Scored[]> {
+  const prequelOf = (id: number) =>
+    (relations.get(id) ?? []).find((r) => r.relationType === "PREQUEL" && !franchiseIds.has(r.anilistId))?.anilistId;
+
+  const roots = new Map<number, number>();
+  for (const entry of shortlist) {
+    if (entry.sequelOf) continue;
+    const id = entry.candidate.anime.anilistId!;
+    const prequel = prequelOf(id);
+    if (prequel) roots.set(id, prequel);
+  }
+  if (!roots.size) return shortlist;
+
+  try {
+    for (let hop = 0; hop < 2; hop++) {
+      const frontier = [...new Set(roots.values())].filter((id) => !relations.has(id));
+      if (frontier.length) for (const [id, refs] of await getRelations(frontier)) relations.set(id, refs);
+      let moved = false;
+      for (const [id, root] of roots) {
+        const next = prequelOf(root);
+        if (next && next !== id && !roots.has(next)) {
+          roots.set(id, next);
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+  } catch {
+    /* keep one-hop roots */
+  }
+
+  let rootCards = new Map<number, Anime>();
+  try {
+    rootCards = new Map((await getAnimeByIds([...new Set(roots.values())])).map((a) => [a.anilistId!, a]));
+  } catch {
+    return shortlist;
+  }
+
+  const result: Scored[] = [];
+  for (const entry of shortlist) {
+    const id = entry.candidate.anime.anilistId!;
+    const rootId = roots.get(id);
+    const rootAnime = rootId ? rootCards.get(rootId) : undefined;
+    if (!rootId || !rootAnime || !isEligible(rootAnime) || franchiseIds.has(rootId)) {
+      // Later entries whose starting point is unusable are dropped rather
+      // than recommended mid-story.
+      if (!rootId) result.push(entry);
+      continue;
+    }
+    if (!isRealStartingPoint(rootAnime, entry.candidate.anime)) {
+      // AniList also uses PREQUEL for chronological side stories (e.g. a
+      // prequel movie made years later); those aren't where newcomers start.
+      result.push(entry);
+      continue;
+    }
+    let root = candidates.get(rootId);
+    if (!root) {
+      root = { anime: rootAnime, alLinks: new Map(), malLinks: new Map(), fromDiscovery: false, absorbed: [] };
+      candidates.set(rootId, root);
+    }
+    for (const [seed, value] of entry.candidate.alLinks) root.alLinks.set(seed, Math.max(root.alLinks.get(seed) ?? 0, value));
+    for (const [seed, value] of entry.candidate.malLinks) root.malLinks.set(seed, Math.max(root.malLinks.get(seed) ?? 0, value));
+    if (!root.absorbed.some((a) => a.anilistId === id)) root.absorbed.push(entry.candidate.anime);
+    result.push(score(root));
+  }
+
+  const best = new Map<number, Scored>();
+  for (const entry of result) {
+    const id = entry.candidate.anime.anilistId!;
+    const existing = best.get(id);
+    if (!existing || entry.rankScore > existing.rankScore) best.set(id, entry);
+  }
+  return [...best.values()];
 }

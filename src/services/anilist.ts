@@ -226,7 +226,11 @@ export async function getSeeds(ids: number[]): Promise<AniListSeed[]> {
   return unique.map((id) => found.get(id)).filter((s): s is AniListSeed => Boolean(s));
 }
 
-/** Franchise relations (1 hop) for a set of candidates. */
+/**
+ * Franchise relations (1 hop) for a set of candidates. Prequel cards are
+ * fetched in the same request so later seasons can be swapped for the
+ * entry a newcomer should actually start with.
+ */
 export async function getRelations(ids: number[]): Promise<Map<number, RelationRef[]>> {
   const result = new Map<number, RelationRef[]>();
   const missing: number[] = [];
@@ -235,16 +239,28 @@ export async function getRelations(ids: number[]): Promise<Map<number, RelationR
     if (hit) result.set(id, hit);
     else missing.push(id);
   }
-  for (let i = 0; i < missing.length; i += 50) {
-    const chunk = missing.slice(i, i + 50);
+  for (let i = 0; i < missing.length; i += 25) {
+    const chunk = missing.slice(i, i + 25);
     const data = await query<PageResult>(
-      `query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids, type: ANIME) { id ${RELATION_FIELDS} } } }`,
+      `query ($ids: [Int]) {
+        Page(perPage: 25) {
+          media(id_in: $ids, type: ANIME) {
+            id
+            relations { edges { relationType(version: 2) node { type ${CARD_FIELDS} } } }
+          }
+        }
+      }`,
       { ids: chunk },
     );
     for (const media of data.Page.media) {
       const refs = relationRefs(media);
       cache.set(`al:rel:${media.id}`, refs, TTL.hour * 12);
       result.set(media.id, refs);
+      for (const edge of media.relations?.edges ?? []) {
+        if (edge.relationType === "PREQUEL" && edge.node && (edge.node as AniListMedia & { type?: string }).type === "ANIME") {
+          cache.set(`al:card:${edge.node.id}`, normalizeAniList(edge.node), TTL.hour * 12);
+        }
+      }
     }
   }
   return result;
@@ -453,10 +469,20 @@ export async function getRandomAnime(filters: RandomFilters, excludeIds: number[
   );
   const hits = Object.values(sampled)
     .flatMap((page) => page?.media ?? [])
-    .filter((media) => !exclude.has(media.id));
+    .filter((media) => !exclude.has(media.id) && matchesFilters(media, filters));
   if (hits.length) return normalizeAniList(shuffle(hits)[0]);
 
   return randomFromSmallPool(args, defs, filters, exclude);
+}
+
+/** AniList's filter index can lag its displayed values slightly; re-check what the user will see. */
+function matchesFilters(media: AniListMedia, filters: RandomFilters): boolean {
+  const score = media.averageScore ?? media.meanScore ?? null;
+  if (filters.minScore && (score === null || score < filters.minScore)) return false;
+  const year = media.seasonYear ?? media.startDate?.year ?? null;
+  if (filters.yearFrom && year !== null && year < filters.yearFrom) return false;
+  if (filters.yearTo && year !== null && year > filters.yearTo) return false;
+  return true;
 }
 
 async function randomFromSmallPool(
@@ -499,7 +525,7 @@ async function randomFromSmallPool(
       }`,
       variables,
     );
-    const pool = data.Page.media.filter((m) => !exclude.has(m.id));
+    const pool = data.Page.media.filter((m) => !exclude.has(m.id) && matchesFilters(m, filters));
     if (pool.length) return normalizeAniList(shuffle(pool)[0]);
   }
   return null;
