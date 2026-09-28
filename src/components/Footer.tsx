@@ -3,7 +3,7 @@ export function Footer() {
     <footer className="border-t border-white/5 px-4 py-10 sm:px-6">
       <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-3 text-xs text-muted-foreground sm:flex-row">
         <p>
-          <span className="font-heading font-semibold text-foreground">tsugi.</span> — anime discovery built on community data.
+          <span className="font-heading font-semibold text-foreground">Ani Select</span> — anime discovery built on community data.
         </p>
         <p>
           Data from{" "}

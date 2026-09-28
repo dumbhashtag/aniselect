@@ -1,4 +1,4 @@
-# tsugi. — find your next anime
+# Ani Select — find your next anime
 
 Pick five anime you love and get three recommendations you should watch next, each with a match percentage and a plain-English explanation of *why* it was picked. There's also a randomizer that pulls a genuinely random title from AniList's full catalogue, with optional filters.
 

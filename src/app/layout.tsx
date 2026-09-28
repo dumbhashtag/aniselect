@@ -19,7 +19,7 @@ const display = Bricolage_Grotesque({
 });
 
 export const metadata: Metadata = {
-  title: "Next Up — Find your next anime",
+  title: "Ani Select — Find your next anime",
   description: "Pick 5 anime you love and we'll find 3 you should watch next, powered by AniList and MyAnimeList community data.",
 };
 
