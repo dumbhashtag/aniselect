@@ -54,7 +54,7 @@ export function AnimeModalProvider({ children }: { children: React.ReactNode }) 
       {children}
       <Dialog open={isOpen} onOpenChange={setIsOpen} onOpenChangeComplete={(o) => !o && setStack([])}>
         <DialogContent
-          className="glass-strong scrollbar-thin max-h-[calc(100dvh-1.5rem)] gap-0 overflow-x-hidden overflow-y-auto rounded-3xl p-0 sm:max-w-4xl"
+          className="glass-strong scrollbar-thin block max-h-[calc(100dvh-1.5rem)] overflow-x-hidden overflow-y-auto rounded-3xl p-0 sm:max-w-4xl"
         >
           {current && (
             <AnimeModalBody
@@ -102,7 +102,7 @@ function AnimeModalBody({ preview, canGoBack, onBack, onNavigate }: BodyProps) {
   const anime: Anime = details ?? preview;
 
   return (
-    <div ref={topRef}>
+    <div ref={topRef} className="min-w-0">
       <DialogTitle className="sr-only">{anime.title}</DialogTitle>
       <DialogDescription className="sr-only">Details, trailer and related titles for {anime.title}.</DialogDescription>
 
@@ -317,7 +317,7 @@ function AnimeRow({
   onSelect: (anime: Anime) => void;
 }) {
   return (
-    <section>
+    <section className="min-w-0">
       <h3 className="mb-3 font-heading text-lg font-semibold">{title}</h3>
       <div className="scrollbar-thin -mx-5 flex snap-x gap-3 overflow-x-auto px-5 pb-2 sm:-mx-8 sm:px-8">
         {items.map(({ anime, label }) => (
