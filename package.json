@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start -p 4317",
     "lint": "eslint",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "smoke:anilist": "tsx --conditions=react-server scripts/smoke-anilist.mts",
+    "smoke:recs": "tsx --conditions=react-server scripts/smoke-recs.mts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -29,6 +31,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
